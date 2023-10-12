@@ -1,9 +1,9 @@
 """The tests for the Google Wifi platform."""
 from datetime import datetime, timedelta
+from http import HTTPStatus
 from unittest.mock import Mock, patch
 
 import homeassistant.components.google_wifi.sensor as google_wifi
-from homeassistant.const import STATE_UNKNOWN
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
@@ -33,7 +33,7 @@ MOCK_DATA_MISSING = '{"software": {},' '"system": {},' '"wan": {}}'
 async def test_setup_minimum(hass, requests_mock):
     """Test setup with minimum configuration."""
     resource = f"http://{google_wifi.DEFAULT_HOST}{google_wifi.ENDPOINT}"
-    requests_mock.get(resource, status_code=200)
+    requests_mock.get(resource, status_code=HTTPStatus.OK)
     assert await async_setup_component(
         hass,
         "sensor",
@@ -45,7 +45,7 @@ async def test_setup_minimum(hass, requests_mock):
 async def test_setup_get(hass, requests_mock):
     """Test setup with full configuration."""
     resource = f"http://localhost{google_wifi.ENDPOINT}"
-    requests_mock.get(resource, status_code=200)
+    requests_mock.get(resource, status_code=HTTPStatus.OK)
     assert await async_setup_component(
         hass,
         "sensor",
@@ -74,7 +74,7 @@ def setup_api(hass, data, requests_mock):
     now = datetime(1970, month=1, day=1)
     sensor_dict = {}
     with patch("homeassistant.util.dt.now", return_value=now):
-        requests_mock.get(resource, text=data, status_code=200)
+        requests_mock.get(resource, text=data, status_code=HTTPStatus.OK)
         conditions = google_wifi.SENSOR_KEYS
         api = google_wifi.GoogleWifiAPI("localhost", conditions)
     for desc in google_wifi.SENSOR_TYPES:
@@ -107,9 +107,9 @@ def test_name(requests_mock):
         assert test_name == sensor.name
 
 
-def test_unit_of_measurement(requests_mock):
+def test_unit_of_measurement(hass, requests_mock):
     """Test the unit of measurement."""
-    api, sensor_dict = setup_api(None, MOCK_DATA, requests_mock)
+    api, sensor_dict = setup_api(hass, MOCK_DATA, requests_mock)
     for name in sensor_dict:
         sensor = sensor_dict[name]["sensor"]
         assert sensor_dict[name]["units"] == sensor.unit_of_measurement
@@ -170,7 +170,7 @@ def test_update_when_value_changed(hass, requests_mock):
             elif name == google_wifi.ATTR_NEW_VERSION:
                 assert sensor.state == "Latest"
             elif name == google_wifi.ATTR_LOCAL_IP:
-                assert sensor.state == STATE_UNKNOWN
+                assert sensor.state is None
             else:
                 assert sensor.state == "next"
 
@@ -184,7 +184,7 @@ def test_when_api_data_missing(hass, requests_mock):
             sensor = sensor_dict[name]["sensor"]
             fake_delay(hass, 2)
             sensor.update()
-            assert sensor.state == STATE_UNKNOWN
+            assert sensor.state is None
 
 
 def test_update_when_unavailable(hass, requests_mock):

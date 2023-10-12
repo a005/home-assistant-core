@@ -1,15 +1,22 @@
 """Test the Z-Wave JS config flow."""
 import asyncio
-from unittest.mock import DEFAULT, call, patch
+from collections.abc import Generator
+from copy import copy
+from unittest.mock import DEFAULT, MagicMock, call, patch
 
 import aiohttp
 import pytest
+from serial.tools.list_ports_common import ListPortInfo
 from zwave_js_server.version import VersionInfo
 
-from homeassistant import config_entries, setup
+from homeassistant import config_entries
+from homeassistant.components import usb
+from homeassistant.components.hassio import HassioServiceInfo
 from homeassistant.components.hassio.handler import HassioAPIError
+from homeassistant.components.zeroconf import ZeroconfServiceInfo
 from homeassistant.components.zwave_js.config_flow import SERVER_VERSION_TIMEOUT, TITLE
-from homeassistant.components.zwave_js.const import DOMAIN
+from homeassistant.components.zwave_js.const import ADDON_SLUG, DOMAIN
+from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry
 
@@ -20,38 +27,32 @@ ADDON_DISCOVERY_INFO = {
 }
 
 
-USB_DISCOVERY_INFO = {
-    "device": "/dev/zwave",
-    "pid": "AAAA",
-    "vid": "AAAA",
-    "serial_number": "1234",
-    "description": "zwave radio",
-    "manufacturer": "test",
-}
+USB_DISCOVERY_INFO = usb.UsbServiceInfo(
+    device="/dev/zwave",
+    pid="AAAA",
+    vid="AAAA",
+    serial_number="1234",
+    description="zwave radio",
+    manufacturer="test",
+)
 
-NORTEK_ZIGBEE_DISCOVERY_INFO = {
-    "device": "/dev/zigbee",
-    "pid": "8A2A",
-    "vid": "10C4",
-    "serial_number": "1234",
-    "description": "nortek zigbee radio",
-    "manufacturer": "nortek",
-}
+NORTEK_ZIGBEE_DISCOVERY_INFO = usb.UsbServiceInfo(
+    device="/dev/zigbee",
+    pid="8A2A",
+    vid="10C4",
+    serial_number="1234",
+    description="nortek zigbee radio",
+    manufacturer="nortek",
+)
 
-CP2652_ZIGBEE_DISCOVERY_INFO = {
-    "device": "/dev/zigbee",
-    "pid": "EA60",
-    "vid": "10C4",
-    "serial_number": "",
-    "description": "cp2652",
-    "manufacturer": "generic",
-}
-
-
-@pytest.fixture(name="persistent_notification", autouse=True)
-async def setup_persistent_notification(hass):
-    """Set up persistent notification integration."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+CP2652_ZIGBEE_DISCOVERY_INFO = usb.UsbServiceInfo(
+    device="/dev/zigbee",
+    pid="EA60",
+    vid="10C4",
+    serial_number="",
+    description="cp2652",
+    manufacturer="generic",
+)
 
 
 @pytest.fixture(name="setup_entry")
@@ -88,7 +89,7 @@ def discovery_info_side_effect_fixture():
 def mock_get_addon_discovery_info(discovery_info, discovery_info_side_effect):
     """Mock get add-on discovery info."""
     with patch(
-        "homeassistant.components.zwave_js.addon.async_get_addon_discovery_info",
+        "homeassistant.components.hassio.addon_manager.async_get_addon_discovery_info",
         side_effect=discovery_info_side_effect,
         return_value=discovery_info,
     ) as get_addon_discovery_info:
@@ -137,9 +138,53 @@ def mock_addon_setup_time():
         yield addon_setup_time
 
 
-async def test_manual(hass):
+@pytest.fixture(name="serial_port")
+def serial_port_fixture() -> ListPortInfo:
+    """Return a mock serial port."""
+    port = ListPortInfo("/test", skip_link_detection=True)
+    port.serial_number = "1234"
+    port.manufacturer = "Virtual serial port"
+    port.device = "/test"
+    port.description = "Some serial port"
+    port.pid = 9876
+    port.vid = 5678
+
+    return port
+
+
+@pytest.fixture(name="mock_list_ports", autouse=True)
+def mock_list_ports_fixture(serial_port) -> Generator[MagicMock, None, None]:
+    """Mock list ports."""
+    with patch(
+        "homeassistant.components.zwave_js.config_flow.list_ports.comports"
+    ) as mock_list_ports:
+        another_port = copy(serial_port)
+        another_port.device = "/new"
+        another_port.description = "New serial port"
+        another_port.serial_number = "5678"
+        another_port.pid = 8765
+        no_vid_port = copy(serial_port)
+        no_vid_port.device = "/no_vid"
+        no_vid_port.description = "Port without vid"
+        no_vid_port.serial_number = "9123"
+        no_vid_port.vid = None
+        mock_list_ports.return_value = [serial_port, another_port, no_vid_port]
+        yield mock_list_ports
+
+
+@pytest.fixture(name="mock_usb_serial_by_id", autouse=True)
+def mock_usb_serial_by_id_fixture() -> Generator[MagicMock, None, None]:
+    """Mock usb serial by id."""
+    with patch(
+        "homeassistant.components.zwave_js.config_flow.usb.get_serial_by_id"
+    ) as mock_usb_serial_by_id:
+        mock_usb_serial_by_id.side_effect = lambda x: x
+        yield mock_usb_serial_by_id
+
+
+async def test_manual(hass: HomeAssistant) -> None:
     """Test we create an entry with manual step."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
+
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -164,13 +209,16 @@ async def test_manual(hass):
     assert result2["data"] == {
         "url": "ws://localhost:3000",
         "usb_path": None,
-        "network_key": None,
+        "s0_legacy_key": None,
+        "s2_access_control_key": None,
+        "s2_authenticated_key": None,
+        "s2_unauthenticated_key": None,
         "use_addon": False,
         "integration_created_addon": False,
     }
     assert len(mock_setup.mock_calls) == 1
     assert len(mock_setup_entry.mock_calls) == 1
-    assert result2["result"].unique_id == 1234
+    assert result2["result"].unique_id == "1234"
 
 
 async def slow_server_version(*args):
@@ -234,7 +282,7 @@ async def test_manual_errors(hass, integration, url, error, flow, flow_params):
     assert result["errors"] == {"base": error}
 
 
-async def test_manual_already_configured(hass):
+async def test_manual_already_configured(hass: HomeAssistant) -> None:
     """Test that only one unique instance is allowed."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -244,11 +292,10 @@ async def test_manual_already_configured(hass):
             "integration_created_addon": True,
         },
         title=TITLE,
-        unique_id=1234,
+        unique_id="1234",
     )
     entry.add_to_hass(hass)
 
-    await setup.async_setup_component(hass, "persistent_notification", {})
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -275,15 +322,21 @@ async def test_supervisor_discovery(
     hass, supervisor, addon_running, addon_options, get_addon_discovery_info
 ):
     """Test flow started from Supervisor discovery."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     addon_options["device"] = "/test"
-    addon_options["network_key"] = "abc123"
+    addon_options["s0_legacy_key"] = "new123"
+    addon_options["s2_access_control_key"] = "new456"
+    addon_options["s2_authenticated_key"] = "new789"
+    addon_options["s2_unauthenticated_key"] = "new987"
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HASSIO},
-        data=ADDON_DISCOVERY_INFO,
+        data=HassioServiceInfo(
+            config=ADDON_DISCOVERY_INFO,
+            name="Z-Wave JS",
+            slug=ADDON_SLUG,
+        ),
     )
 
     with patch(
@@ -300,7 +353,10 @@ async def test_supervisor_discovery(
     assert result["data"] == {
         "url": "ws://host1:3001",
         "usb_path": "/test",
-        "network_key": "abc123",
+        "s0_legacy_key": "new123",
+        "s2_access_control_key": "new456",
+        "s2_authenticated_key": "new789",
+        "s2_unauthenticated_key": "new987",
         "use_addon": True,
         "integration_created_addon": False,
     }
@@ -316,12 +372,15 @@ async def test_supervisor_discovery_cannot_connect(
     hass, supervisor, get_addon_discovery_info
 ):
     """Test Supervisor discovery and cannot connect."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HASSIO},
-        data=ADDON_DISCOVERY_INFO,
+        data=HassioServiceInfo(
+            config=ADDON_DISCOVERY_INFO,
+            name="Z-Wave JS",
+            slug=ADDON_SLUG,
+        ),
     )
 
     assert result["type"] == "abort"
@@ -333,15 +392,21 @@ async def test_clean_discovery_on_user_create(
     hass, supervisor, addon_running, addon_options, get_addon_discovery_info
 ):
     """Test discovery flow is cleaned up when a user flow is finished."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     addon_options["device"] = "/test"
-    addon_options["network_key"] = "abc123"
+    addon_options["s0_legacy_key"] = "new123"
+    addon_options["s2_access_control_key"] = "new456"
+    addon_options["s2_authenticated_key"] = "new789"
+    addon_options["s2_unauthenticated_key"] = "new987"
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HASSIO},
-        data=ADDON_DISCOVERY_INFO,
+        data=HassioServiceInfo(
+            config=ADDON_DISCOVERY_INFO,
+            name="Z-Wave JS",
+            slug=ADDON_SLUG,
+        ),
     )
 
     assert result["type"] == "form"
@@ -380,7 +445,10 @@ async def test_clean_discovery_on_user_create(
     assert result["data"] == {
         "url": "ws://localhost:3000",
         "usb_path": None,
-        "network_key": None,
+        "s0_legacy_key": None,
+        "s2_access_control_key": None,
+        "s2_authenticated_key": None,
+        "s2_unauthenticated_key": None,
         "use_addon": False,
         "integration_created_addon": False,
     }
@@ -392,17 +460,23 @@ async def test_abort_discovery_with_existing_entry(
     hass, supervisor, addon_running, addon_options
 ):
     """Test discovery flow is aborted if an entry already exists."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     entry = MockConfigEntry(
-        domain=DOMAIN, data={"url": "ws://localhost:3000"}, title=TITLE, unique_id=1234
+        domain=DOMAIN,
+        data={"url": "ws://localhost:3000"},
+        title=TITLE,
+        unique_id="1234",
     )
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HASSIO},
-        data=ADDON_DISCOVERY_INFO,
+        data=HassioServiceInfo(
+            config=ADDON_DISCOVERY_INFO,
+            name="Z-Wave JS",
+            slug=ADDON_SLUG,
+        ),
     )
 
     assert result["type"] == "abort"
@@ -412,7 +486,7 @@ async def test_abort_discovery_with_existing_entry(
 
 
 async def test_abort_hassio_discovery_with_existing_flow(
-    hass, supervisor, addon_options
+    hass, supervisor, addon_installed, addon_options
 ):
     """Test hassio discovery flow is aborted when another discovery has happened."""
     result = await hass.config_entries.flow.async_init(
@@ -426,16 +500,44 @@ async def test_abort_hassio_discovery_with_existing_flow(
     result2 = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HASSIO},
-        data=ADDON_DISCOVERY_INFO,
+        data=HassioServiceInfo(
+            config=ADDON_DISCOVERY_INFO,
+            name="Z-Wave JS",
+            slug=ADDON_SLUG,
+        ),
     )
 
     assert result2["type"] == "abort"
     assert result2["reason"] == "already_in_progress"
 
 
+async def test_abort_hassio_discovery_for_other_addon(
+    hass, supervisor, addon_installed, addon_options
+):
+    """Test hassio discovery flow is aborted for a non official add-on discovery."""
+    result2 = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_HASSIO},
+        data=HassioServiceInfo(
+            config={
+                "addon": "Other Z-Wave JS",
+                "host": "host1",
+                "port": 3001,
+            },
+            name="Other Z-Wave JS",
+            slug="other_addon",
+        ),
+    )
+
+    assert result2["type"] == "abort"
+    assert result2["reason"] == "not_zwave_js_addon"
+
+
+@pytest.mark.parametrize("discovery_info", [{"config": ADDON_DISCOVERY_INFO}])
 async def test_usb_discovery(
     hass,
     supervisor,
+    addon_not_installed,
     install_addon,
     addon_options,
     get_addon_discovery_info,
@@ -467,11 +569,27 @@ async def test_usb_discovery(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test", "network_key": "abc123"}
+        result["flow_id"],
+        {
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
-        hass, "core_zwave_js", {"options": {"device": "/test", "network_key": "abc123"}}
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": USB_DISCOVERY_INFO.device,
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -491,14 +609,21 @@ async def test_usb_discovery(
 
     assert result["type"] == "create_entry"
     assert result["title"] == TITLE
-    assert result["data"]["usb_path"] == "/test"
-    assert result["data"]["integration_created_addon"] is True
-    assert result["data"]["use_addon"] is True
-    assert result["data"]["network_key"] == "abc123"
+    assert result["data"] == {
+        "url": "ws://host1:3001",
+        "usb_path": USB_DISCOVERY_INFO.device,
+        "s0_legacy_key": "new123",
+        "s2_access_control_key": "new456",
+        "s2_authenticated_key": "new789",
+        "s2_unauthenticated_key": "new987",
+        "use_addon": True,
+        "integration_created_addon": True,
+    }
     assert len(mock_setup.mock_calls) == 1
     assert len(mock_setup_entry.mock_calls) == 1
 
 
+@pytest.mark.parametrize("discovery_info", [{"config": ADDON_DISCOVERY_INFO}])
 async def test_usb_discovery_addon_not_running(
     hass,
     supervisor,
@@ -527,19 +652,34 @@ async def test_usb_discovery_addon_not_running(
     # Make sure the discovered usb device is preferred.
     data_schema = result["data_schema"]
     assert data_schema({}) == {
-        "usb_path": USB_DISCOVERY_INFO["device"],
-        "network_key": "",
+        "s0_legacy_key": "",
+        "s2_access_control_key": "",
+        "s2_authenticated_key": "",
+        "s2_unauthenticated_key": "",
     }
 
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        {"usb_path": USB_DISCOVERY_INFO["device"], "network_key": "abc123"},
+        {
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
         hass,
         "core_zwave_js",
-        {"options": {"device": USB_DISCOVERY_INFO["device"], "network_key": "abc123"}},
+        {
+            "options": {
+                "device": USB_DISCOVERY_INFO.device,
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -559,10 +699,16 @@ async def test_usb_discovery_addon_not_running(
 
     assert result["type"] == "create_entry"
     assert result["title"] == TITLE
-    assert result["data"]["usb_path"] == USB_DISCOVERY_INFO["device"]
-    assert result["data"]["integration_created_addon"] is False
-    assert result["data"]["use_addon"] is True
-    assert result["data"]["network_key"] == "abc123"
+    assert result["data"] == {
+        "url": "ws://host1:3001",
+        "usb_path": USB_DISCOVERY_INFO.device,
+        "s0_legacy_key": "new123",
+        "s2_access_control_key": "new456",
+        "s2_authenticated_key": "new789",
+        "s2_unauthenticated_key": "new987",
+        "use_addon": True,
+        "integration_created_addon": False,
+    }
     assert len(mock_setup.mock_calls) == 1
     assert len(mock_setup_entry.mock_calls) == 1
 
@@ -572,12 +718,15 @@ async def test_discovery_addon_not_running(
 ):
     """Test discovery with add-on already installed but not running."""
     addon_options["device"] = None
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HASSIO},
-        data=ADDON_DISCOVERY_INFO,
+        data=HassioServiceInfo(
+            config=ADDON_DISCOVERY_INFO,
+            name="Z-Wave JS",
+            slug=ADDON_SLUG,
+        ),
     )
 
     assert result["step_id"] == "hassio_confirm"
@@ -589,11 +738,28 @@ async def test_discovery_addon_not_running(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test", "network_key": "abc123"}
+        result["flow_id"],
+        {
+            "usb_path": "/test",
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
-        hass, "core_zwave_js", {"options": {"device": "/test", "network_key": "abc123"}}
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": "/test",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -616,7 +782,10 @@ async def test_discovery_addon_not_running(
     assert result["data"] == {
         "url": "ws://host1:3001",
         "usb_path": "/test",
-        "network_key": "abc123",
+        "s0_legacy_key": "new123",
+        "s2_access_control_key": "new456",
+        "s2_authenticated_key": "new789",
+        "s2_unauthenticated_key": "new987",
         "use_addon": True,
         "integration_created_addon": False,
     }
@@ -627,20 +796,21 @@ async def test_discovery_addon_not_running(
 async def test_discovery_addon_not_installed(
     hass,
     supervisor,
-    addon_installed,
+    addon_not_installed,
     install_addon,
     addon_options,
     set_addon_options,
     start_addon,
 ):
     """Test discovery with add-on not installed."""
-    addon_installed.return_value["version"] = None
-    await setup.async_setup_component(hass, "persistent_notification", {})
-
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HASSIO},
-        data=ADDON_DISCOVERY_INFO,
+        data=HassioServiceInfo(
+            config=ADDON_DISCOVERY_INFO,
+            name="Z-Wave JS",
+            slug=ADDON_SLUG,
+        ),
     )
 
     assert result["step_id"] == "hassio_confirm"
@@ -661,11 +831,28 @@ async def test_discovery_addon_not_installed(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test", "network_key": "abc123"}
+        result["flow_id"],
+        {
+            "usb_path": "/test",
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
-        hass, "core_zwave_js", {"options": {"device": "/test", "network_key": "abc123"}}
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": "/test",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -688,7 +875,10 @@ async def test_discovery_addon_not_installed(
     assert result["data"] == {
         "url": "ws://host1:3001",
         "usb_path": "/test",
-        "network_key": "abc123",
+        "s0_legacy_key": "new123",
+        "s2_access_control_key": "new456",
+        "s2_authenticated_key": "new789",
+        "s2_unauthenticated_key": "new987",
         "use_addon": True,
         "integration_created_addon": True,
     }
@@ -701,7 +891,11 @@ async def test_abort_usb_discovery_with_existing_flow(hass, supervisor, addon_op
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_HASSIO},
-        data=ADDON_DISCOVERY_INFO,
+        data=HassioServiceInfo(
+            config=ADDON_DISCOVERY_INFO,
+            name="Z-Wave JS",
+            slug=ADDON_SLUG,
+        ),
     )
 
     assert result["type"] == "form"
@@ -719,7 +913,10 @@ async def test_abort_usb_discovery_with_existing_flow(hass, supervisor, addon_op
 async def test_abort_usb_discovery_already_configured(hass, supervisor, addon_options):
     """Test usb discovery flow is aborted when there is an existing entry."""
     entry = MockConfigEntry(
-        domain=DOMAIN, data={"url": "ws://localhost:3000"}, title=TITLE, unique_id=1234
+        domain=DOMAIN,
+        data={"url": "ws://localhost:3000"},
+        title=TITLE,
+        unique_id="1234",
     )
     entry.add_to_hass(hass)
 
@@ -732,7 +929,7 @@ async def test_abort_usb_discovery_already_configured(hass, supervisor, addon_op
     assert result["reason"] == "already_configured"
 
 
-async def test_usb_discovery_requires_supervisor(hass):
+async def test_usb_discovery_requires_supervisor(hass: HomeAssistant) -> None:
     """Test usb discovery flow is aborted when there is no supervisor."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
@@ -773,7 +970,6 @@ async def test_abort_usb_discovery_aborts_specific_devices(
 
 async def test_not_addon(hass, supervisor):
     """Test opting out of add-on on Supervisor."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -808,7 +1004,10 @@ async def test_not_addon(hass, supervisor):
     assert result["data"] == {
         "url": "ws://localhost:3000",
         "usb_path": None,
-        "network_key": None,
+        "s0_legacy_key": None,
+        "s2_access_control_key": None,
+        "s2_authenticated_key": None,
+        "s2_unauthenticated_key": None,
         "use_addon": False,
         "integration_created_addon": False,
     }
@@ -826,8 +1025,10 @@ async def test_addon_running(
 ):
     """Test add-on already running on Supervisor."""
     addon_options["device"] = "/test"
-    addon_options["network_key"] = "abc123"
-    await setup.async_setup_component(hass, "persistent_notification", {})
+    addon_options["s0_legacy_key"] = "new123"
+    addon_options["s2_access_control_key"] = "new456"
+    addon_options["s2_authenticated_key"] = "new789"
+    addon_options["s2_unauthenticated_key"] = "new987"
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -852,7 +1053,10 @@ async def test_addon_running(
     assert result["data"] == {
         "url": "ws://host1:3001",
         "usb_path": "/test",
-        "network_key": "abc123",
+        "s0_legacy_key": "new123",
+        "s2_access_control_key": "new456",
+        "s2_authenticated_key": "new789",
+        "s2_unauthenticated_key": "new987",
         "use_addon": True,
         "integration_created_addon": False,
     }
@@ -861,8 +1065,10 @@ async def test_addon_running(
 
 
 @pytest.mark.parametrize(
-    "discovery_info, discovery_info_side_effect, server_version_side_effect, "
-    "addon_info_side_effect, abort_reason",
+    (
+        "discovery_info, discovery_info_side_effect, server_version_side_effect, "
+        "addon_info_side_effect, abort_reason"
+    ),
     [
         (
             {"config": ADDON_DISCOVERY_INFO},
@@ -905,7 +1111,6 @@ async def test_addon_running_failures(
     """Test all failures when add-on is running."""
     addon_options["device"] = "/test"
     addon_options["network_key"] = "abc123"
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -928,20 +1133,27 @@ async def test_addon_running_already_configured(
 ):
     """Test that only one unique instance is allowed when add-on is running."""
     addon_options["device"] = "/test_new"
-    addon_options["network_key"] = "def456"
+    addon_options["s0_legacy_key"] = "new123"
+    addon_options["s2_access_control_key"] = "new456"
+    addon_options["s2_authenticated_key"] = "new789"
+    addon_options["s2_unauthenticated_key"] = "new987"
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
             "url": "ws://localhost:3000",
             "usb_path": "/test",
-            "network_key": "abc123",
+            "network_key": "old123",
+            "s0_legacy_key": "old123",
+            "s2_access_control_key": "old456",
+            "s2_authenticated_key": "old789",
+            "s2_unauthenticated_key": "old987",
         },
         title=TITLE,
-        unique_id=1234,
+        unique_id=1234,  # Unique ID is purposely set to int to test migration logic
     )
     entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
 
-    await setup.async_setup_component(hass, "persistent_notification", {})
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -957,7 +1169,10 @@ async def test_addon_running_already_configured(
     assert result["reason"] == "already_configured"
     assert entry.data["url"] == "ws://host1:3001"
     assert entry.data["usb_path"] == "/test_new"
-    assert entry.data["network_key"] == "def456"
+    assert entry.data["s0_legacy_key"] == "new123"
+    assert entry.data["s2_access_control_key"] == "new456"
+    assert entry.data["s2_authenticated_key"] == "new789"
+    assert entry.data["s2_unauthenticated_key"] == "new987"
 
 
 @pytest.mark.parametrize("discovery_info", [{"config": ADDON_DISCOVERY_INFO}])
@@ -971,7 +1186,6 @@ async def test_addon_installed(
     get_addon_discovery_info,
 ):
     """Test add-on already installed but not running on Supervisor."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -988,11 +1202,28 @@ async def test_addon_installed(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test", "network_key": "abc123"}
+        result["flow_id"],
+        {
+            "usb_path": "/test",
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
-        hass, "core_zwave_js", {"options": {"device": "/test", "network_key": "abc123"}}
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": "/test",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -1015,7 +1246,10 @@ async def test_addon_installed(
     assert result["data"] == {
         "url": "ws://host1:3001",
         "usb_path": "/test",
-        "network_key": "abc123",
+        "s0_legacy_key": "new123",
+        "s2_access_control_key": "new456",
+        "s2_authenticated_key": "new789",
+        "s2_unauthenticated_key": "new987",
         "use_addon": True,
         "integration_created_addon": False,
     }
@@ -1037,7 +1271,6 @@ async def test_addon_installed_start_failure(
     get_addon_discovery_info,
 ):
     """Test add-on start failure when add-on is installed."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -1054,11 +1287,28 @@ async def test_addon_installed_start_failure(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test", "network_key": "abc123"}
+        result["flow_id"],
+        {
+            "usb_path": "/test",
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
-        hass, "core_zwave_js", {"options": {"device": "/test", "network_key": "abc123"}}
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": "/test",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -1096,7 +1346,6 @@ async def test_addon_installed_failures(
     get_addon_discovery_info,
 ):
     """Test all failures when add-on is installed."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -1113,11 +1362,28 @@ async def test_addon_installed_failures(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test", "network_key": "abc123"}
+        result["flow_id"],
+        {
+            "usb_path": "/test",
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
-        hass, "core_zwave_js", {"options": {"device": "/test", "network_key": "abc123"}}
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": "/test",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -1146,7 +1412,6 @@ async def test_addon_installed_set_options_failure(
     get_addon_discovery_info,
 ):
     """Test all failures when add-on is installed."""
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -1163,11 +1428,28 @@ async def test_addon_installed_set_options_failure(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test", "network_key": "abc123"}
+        result["flow_id"],
+        {
+            "usb_path": "/test",
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
-        hass, "core_zwave_js", {"options": {"device": "/test", "network_key": "abc123"}}
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": "/test",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "abort"
@@ -1192,14 +1474,17 @@ async def test_addon_installed_already_configured(
         data={
             "url": "ws://localhost:3000",
             "usb_path": "/test",
-            "network_key": "abc123",
+            "network_key": "old123",
+            "s0_legacy_key": "old123",
+            "s2_access_control_key": "old456",
+            "s2_authenticated_key": "old789",
+            "s2_unauthenticated_key": "old987",
         },
         title=TITLE,
-        unique_id=1234,
+        unique_id="1234",
     )
     entry.add_to_hass(hass)
 
-    await setup.async_setup_component(hass, "persistent_notification", {})
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -1215,13 +1500,28 @@ async def test_addon_installed_already_configured(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test_new", "network_key": "def456"}
+        result["flow_id"],
+        {
+            "usb_path": "/new",
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
         hass,
         "core_zwave_js",
-        {"options": {"device": "/test_new", "network_key": "def456"}},
+        {
+            "options": {
+                "device": "/new",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -1235,15 +1535,18 @@ async def test_addon_installed_already_configured(
     assert result["type"] == "abort"
     assert result["reason"] == "already_configured"
     assert entry.data["url"] == "ws://host1:3001"
-    assert entry.data["usb_path"] == "/test_new"
-    assert entry.data["network_key"] == "def456"
+    assert entry.data["usb_path"] == "/new"
+    assert entry.data["s0_legacy_key"] == "new123"
+    assert entry.data["s2_access_control_key"] == "new456"
+    assert entry.data["s2_authenticated_key"] == "new789"
+    assert entry.data["s2_unauthenticated_key"] == "new987"
 
 
 @pytest.mark.parametrize("discovery_info", [{"config": ADDON_DISCOVERY_INFO}])
 async def test_addon_not_installed(
     hass,
     supervisor,
-    addon_installed,
+    addon_not_installed,
     install_addon,
     addon_options,
     set_addon_options,
@@ -1251,9 +1554,6 @@ async def test_addon_not_installed(
     get_addon_discovery_info,
 ):
     """Test add-on not installed."""
-    addon_installed.return_value["version"] = None
-    await setup.async_setup_component(hass, "persistent_notification", {})
-
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -1279,11 +1579,28 @@ async def test_addon_not_installed(
     assert result["step_id"] == "configure_addon"
 
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {"usb_path": "/test", "network_key": "abc123"}
+        result["flow_id"],
+        {
+            "usb_path": "/test",
+            "s0_legacy_key": "new123",
+            "s2_access_control_key": "new456",
+            "s2_authenticated_key": "new789",
+            "s2_unauthenticated_key": "new987",
+        },
     )
 
     assert set_addon_options.call_args == call(
-        hass, "core_zwave_js", {"options": {"device": "/test", "network_key": "abc123"}}
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": "/test",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+            }
+        },
     )
 
     assert result["type"] == "progress"
@@ -1306,7 +1623,10 @@ async def test_addon_not_installed(
     assert result["data"] == {
         "url": "ws://host1:3001",
         "usb_path": "/test",
-        "network_key": "abc123",
+        "s0_legacy_key": "new123",
+        "s2_access_control_key": "new456",
+        "s2_authenticated_key": "new789",
+        "s2_unauthenticated_key": "new987",
         "use_addon": True,
         "integration_created_addon": True,
     }
@@ -1314,11 +1634,11 @@ async def test_addon_not_installed(
     assert len(mock_setup_entry.mock_calls) == 1
 
 
-async def test_install_addon_failure(hass, supervisor, addon_installed, install_addon):
+async def test_install_addon_failure(
+    hass, supervisor, addon_not_installed, install_addon
+):
     """Test add-on install failure."""
-    addon_installed.return_value["version"] = None
     install_addon.side_effect = HassioAPIError()
-    await setup.async_setup_component(hass, "persistent_notification", {})
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -1347,7 +1667,7 @@ async def test_install_addon_failure(hass, supervisor, addon_installed, install_
 async def test_options_manual(hass, client, integration):
     """Test manual settings in options flow."""
     entry = integration
-    entry.unique_id = 1234
+    entry.unique_id = "1234"
 
     assert client.connect.call_count == 1
     assert client.disconnect.call_count == 0
@@ -1392,7 +1712,7 @@ async def test_options_manual_different_device(hass, integration):
 async def test_options_not_addon(hass, client, supervisor, integration):
     """Test options flow and opting out of add-on on Supervisor."""
     entry = integration
-    entry.unique_id = 1234
+    entry.unique_id = "1234"
 
     assert client.connect.call_count == 1
     assert client.disconnect.call_count == 0
@@ -1426,15 +1746,28 @@ async def test_options_not_addon(hass, client, supervisor, integration):
 
 
 @pytest.mark.parametrize(
-    "discovery_info, entry_data, old_addon_options, new_addon_options, disconnect_calls",
+    (
+        "discovery_info, entry_data, old_addon_options, new_addon_options,"
+        " disconnect_calls"
+    ),
     [
         (
             {"config": ADDON_DISCOVERY_INFO},
             {},
-            {"device": "/test", "network_key": "abc123"},
+            {
+                "device": "/test",
+                "network_key": "old123",
+                "s0_legacy_key": "old123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
+            },
             {
                 "usb_path": "/new",
-                "network_key": "new123",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1443,10 +1776,20 @@ async def test_options_not_addon(hass, client, supervisor, integration):
         (
             {"config": ADDON_DISCOVERY_INFO},
             {"use_addon": True},
-            {"device": "/test", "network_key": "abc123"},
+            {
+                "device": "/test",
+                "network_key": "old123",
+                "s0_legacy_key": "old123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
+            },
             {
                 "usb_path": "/new",
-                "network_key": "new123",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1473,7 +1816,7 @@ async def test_options_addon_running(
     """Test options flow and add-on already running on Supervisor."""
     addon_options.update(old_addon_options)
     entry = integration
-    entry.unique_id = 1234
+    entry.unique_id = "1234"
     data = {**entry.data, **entry_data}
     hass.config_entries.async_update_entry(entry, data=data)
 
@@ -1519,7 +1862,18 @@ async def test_options_addon_running(
     assert result["type"] == "create_entry"
     assert entry.data["url"] == "ws://host1:3001"
     assert entry.data["usb_path"] == new_addon_options["device"]
-    assert entry.data["network_key"] == new_addon_options["network_key"]
+    assert entry.data["s0_legacy_key"] == new_addon_options["s0_legacy_key"]
+    assert (
+        entry.data["s2_access_control_key"]
+        == new_addon_options["s2_access_control_key"]
+    )
+    assert (
+        entry.data["s2_authenticated_key"] == new_addon_options["s2_authenticated_key"]
+    )
+    assert (
+        entry.data["s2_unauthenticated_key"]
+        == new_addon_options["s2_unauthenticated_key"]
+    )
     assert entry.data["use_addon"] is True
     assert entry.data["integration_created_addon"] is False
     assert client.connect.call_count == 2
@@ -1534,13 +1888,20 @@ async def test_options_addon_running(
             {},
             {
                 "device": "/test",
-                "network_key": "abc123",
+                "network_key": "old123",
+                "s0_legacy_key": "old123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
             {
                 "usb_path": "/test",
-                "network_key": "abc123",
+                "s0_legacy_key": "old123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1565,7 +1926,7 @@ async def test_options_addon_running_no_changes(
     """Test options flow without changes, and add-on already running on Supervisor."""
     addon_options.update(old_addon_options)
     entry = integration
-    entry.unique_id = 1234
+    entry.unique_id = "1234"
     data = {**entry.data, **entry_data}
     hass.config_entries.async_update_entry(entry, data=data)
 
@@ -1599,7 +1960,18 @@ async def test_options_addon_running_no_changes(
     assert result["type"] == "create_entry"
     assert entry.data["url"] == "ws://host1:3001"
     assert entry.data["usb_path"] == new_addon_options["device"]
-    assert entry.data["network_key"] == new_addon_options["network_key"]
+    assert entry.data["s0_legacy_key"] == new_addon_options["s0_legacy_key"]
+    assert (
+        entry.data["s2_access_control_key"]
+        == new_addon_options["s2_access_control_key"]
+    )
+    assert (
+        entry.data["s2_authenticated_key"] == new_addon_options["s2_authenticated_key"]
+    )
+    assert (
+        entry.data["s2_unauthenticated_key"]
+        == new_addon_options["s2_unauthenticated_key"]
+    )
     assert entry.data["use_addon"] is True
     assert entry.data["integration_created_addon"] is False
     assert client.connect.call_count == 2
@@ -1618,20 +1990,54 @@ async def different_device_server_version(*args):
 
 
 @pytest.mark.parametrize(
-    "discovery_info, entry_data, old_addon_options, new_addon_options, disconnect_calls, server_version_side_effect",
+    (
+        "discovery_info, entry_data, old_addon_options, new_addon_options,"
+        " disconnect_calls, server_version_side_effect"
+    ),
     [
         (
             {"config": ADDON_DISCOVERY_INFO},
             {},
             {
                 "device": "/test",
-                "network_key": "abc123",
+                "network_key": "old123",
+                "s0_legacy_key": "old123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
             {
                 "usb_path": "/new",
-                "network_key": "new123",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
+                "log_level": "info",
+                "emulate_hardware": False,
+            },
+            0,
+            different_device_server_version,
+        ),
+        (
+            {"config": ADDON_DISCOVERY_INFO},
+            {},
+            {
+                "device": "/test",
+                "network_key": "old123",
+                "s0_legacy_key": "old123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
+                "log_level": "info",
+            },
+            {
+                "usb_path": "/new",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1660,7 +2066,7 @@ async def test_options_different_device(
     """Test options flow and configuring a different device."""
     addon_options.update(old_addon_options)
     entry = integration
-    entry.unique_id = 1234
+    entry.unique_id = "1234"
     data = {**entry.data, **entry_data}
     hass.config_entries.async_update_entry(entry, data=data)
 
@@ -1705,11 +2111,16 @@ async def test_options_different_device(
     result = await hass.config_entries.options.async_configure(result["flow_id"])
     await hass.async_block_till_done()
 
+    # Default emulate_hardware is False.
+    addon_options = {"emulate_hardware": False} | old_addon_options
+    # Legacy network key is not reset.
+    addon_options.pop("network_key")
+
     assert set_addon_options.call_count == 2
     assert set_addon_options.call_args == call(
         hass,
         "core_zwave_js",
-        {"options": old_addon_options},
+        {"options": addon_options},
     )
     assert result["type"] == "progress"
     assert result["step_id"] == "start_addon"
@@ -1730,20 +2141,30 @@ async def test_options_different_device(
 
 
 @pytest.mark.parametrize(
-    "discovery_info, entry_data, old_addon_options, new_addon_options, disconnect_calls, restart_addon_side_effect",
+    (
+        "discovery_info, entry_data, old_addon_options, new_addon_options,"
+        " disconnect_calls, restart_addon_side_effect"
+    ),
     [
         (
             {"config": ADDON_DISCOVERY_INFO},
             {},
             {
                 "device": "/test",
-                "network_key": "abc123",
+                "network_key": "old123",
+                "s0_legacy_key": "old123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
             {
                 "usb_path": "/new",
-                "network_key": "new123",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1755,13 +2176,20 @@ async def test_options_different_device(
             {},
             {
                 "device": "/test",
-                "network_key": "abc123",
+                "network_key": "old123",
+                "s0_legacy_key": "old123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
             {
                 "usb_path": "/new",
-                "network_key": "new123",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1793,7 +2221,7 @@ async def test_options_addon_restart_failed(
     """Test options flow and add-on restart failure."""
     addon_options.update(old_addon_options)
     entry = integration
-    entry.unique_id = 1234
+    entry.unique_id = "1234"
     data = {**entry.data, **entry_data}
     hass.config_entries.async_update_entry(entry, data=data)
 
@@ -1838,6 +2266,8 @@ async def test_options_addon_restart_failed(
     result = await hass.config_entries.options.async_configure(result["flow_id"])
     await hass.async_block_till_done()
 
+    # The legacy network key should not be reset.
+    old_addon_options.pop("network_key")
     assert set_addon_options.call_count == 2
     assert set_addon_options.call_args == call(
         hass,
@@ -1863,7 +2293,10 @@ async def test_options_addon_restart_failed(
 
 
 @pytest.mark.parametrize(
-    "discovery_info, entry_data, old_addon_options, new_addon_options, disconnect_calls, server_version_side_effect",
+    (
+        "discovery_info, entry_data, old_addon_options, new_addon_options,"
+        " disconnect_calls, server_version_side_effect"
+    ),
     [
         (
             {"config": ADDON_DISCOVERY_INFO},
@@ -1871,12 +2304,19 @@ async def test_options_addon_restart_failed(
             {
                 "device": "/test",
                 "network_key": "abc123",
+                "s0_legacy_key": "abc123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
             {
                 "usb_path": "/test",
-                "network_key": "abc123",
+                "s0_legacy_key": "abc123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1905,7 +2345,7 @@ async def test_options_addon_running_server_info_failure(
     """Test options flow and add-on already running with server info failure."""
     addon_options.update(old_addon_options)
     entry = integration
-    entry.unique_id = 1234
+    entry.unique_id = "1234"
     data = {**entry.data, **entry_data}
     hass.config_entries.async_update_entry(entry, data=data)
 
@@ -1940,15 +2380,28 @@ async def test_options_addon_running_server_info_failure(
 
 
 @pytest.mark.parametrize(
-    "discovery_info, entry_data, old_addon_options, new_addon_options, disconnect_calls",
+    (
+        "discovery_info, entry_data, old_addon_options, new_addon_options,"
+        " disconnect_calls"
+    ),
     [
         (
             {"config": ADDON_DISCOVERY_INFO},
             {},
-            {"device": "/test", "network_key": "abc123"},
+            {
+                "device": "/test",
+                "network_key": "abc123",
+                "s0_legacy_key": "abc123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
+            },
             {
                 "usb_path": "/new",
-                "network_key": "new123",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1957,10 +2410,20 @@ async def test_options_addon_running_server_info_failure(
         (
             {"config": ADDON_DISCOVERY_INFO},
             {"use_addon": True},
-            {"device": "/test", "network_key": "abc123"},
+            {
+                "device": "/test",
+                "network_key": "abc123",
+                "s0_legacy_key": "abc123",
+                "s2_access_control_key": "old456",
+                "s2_authenticated_key": "old789",
+                "s2_unauthenticated_key": "old987",
+            },
             {
                 "usb_path": "/new",
-                "network_key": "new123",
+                "s0_legacy_key": "new123",
+                "s2_access_control_key": "new456",
+                "s2_authenticated_key": "new789",
+                "s2_unauthenticated_key": "new987",
                 "log_level": "info",
                 "emulate_hardware": False,
             },
@@ -1972,7 +2435,7 @@ async def test_options_addon_not_installed(
     hass,
     client,
     supervisor,
-    addon_installed,
+    addon_not_installed,
     install_addon,
     integration,
     addon_options,
@@ -1986,10 +2449,9 @@ async def test_options_addon_not_installed(
     disconnect_calls,
 ):
     """Test options flow and add-on not installed on Supervisor."""
-    addon_installed.return_value["version"] = None
     addon_options.update(old_addon_options)
     entry = integration
-    entry.unique_id = 1234
+    entry.unique_id = "1234"
     data = {**entry.data, **entry_data}
     hass.config_entries.async_update_entry(entry, data=data)
 
@@ -2048,8 +2510,142 @@ async def test_options_addon_not_installed(
     assert result["type"] == "create_entry"
     assert entry.data["url"] == "ws://host1:3001"
     assert entry.data["usb_path"] == new_addon_options["device"]
-    assert entry.data["network_key"] == new_addon_options["network_key"]
+    assert entry.data["s0_legacy_key"] == new_addon_options["s0_legacy_key"]
     assert entry.data["use_addon"] is True
     assert entry.data["integration_created_addon"] is True
     assert client.connect.call_count == 2
     assert client.disconnect.call_count == 1
+
+
+@pytest.mark.parametrize("discovery_info", [{"config": ADDON_DISCOVERY_INFO}])
+async def test_import_addon_installed(
+    hass,
+    supervisor,
+    addon_installed,
+    addon_options,
+    set_addon_options,
+    start_addon,
+    get_addon_discovery_info,
+    serial_port,
+):
+    """Test import step while add-on already installed on Supervisor."""
+    serial_port.device = "/test/imported"
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_IMPORT},
+        data={"usb_path": "/test/imported", "network_key": "imported123"},
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "on_supervisor"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"use_addon": True}
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "configure_addon"
+
+    # the default input should be the imported data
+    default_input = result["data_schema"]({})
+
+    assert default_input == {
+        "usb_path": "/test/imported",
+        "s0_legacy_key": "imported123",
+        "s2_access_control_key": "",
+        "s2_authenticated_key": "",
+        "s2_unauthenticated_key": "",
+    }
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], default_input
+    )
+
+    assert set_addon_options.call_args == call(
+        hass,
+        "core_zwave_js",
+        {
+            "options": {
+                "device": "/test/imported",
+                "s0_legacy_key": "imported123",
+                "s2_access_control_key": "",
+                "s2_authenticated_key": "",
+                "s2_unauthenticated_key": "",
+            }
+        },
+    )
+
+    assert result["type"] == "progress"
+    assert result["step_id"] == "start_addon"
+
+    with patch(
+        "homeassistant.components.zwave_js.async_setup", return_value=True
+    ) as mock_setup, patch(
+        "homeassistant.components.zwave_js.async_setup_entry",
+        return_value=True,
+    ) as mock_setup_entry:
+        await hass.async_block_till_done()
+        result = await hass.config_entries.flow.async_configure(result["flow_id"])
+        await hass.async_block_till_done()
+
+    assert start_addon.call_args == call(hass, "core_zwave_js")
+
+    assert result["type"] == "create_entry"
+    assert result["title"] == TITLE
+    assert result["data"] == {
+        "url": "ws://host1:3001",
+        "usb_path": "/test/imported",
+        "s0_legacy_key": "imported123",
+        "s2_access_control_key": "",
+        "s2_authenticated_key": "",
+        "s2_unauthenticated_key": "",
+        "use_addon": True,
+        "integration_created_addon": False,
+    }
+    assert len(mock_setup.mock_calls) == 1
+    assert len(mock_setup_entry.mock_calls) == 1
+
+
+async def test_zeroconf(hass: HomeAssistant) -> None:
+    """Test zeroconf discovery."""
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_ZEROCONF},
+        data=ZeroconfServiceInfo(
+            host="localhost",
+            addresses=["127.0.0.1"],
+            hostname="mock_hostname",
+            name="mock_name",
+            port=3000,
+            type="_zwave-js-server._tcp.local.",
+            properties={"homeId": "1234"},
+        ),
+    )
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "zeroconf_confirm"
+
+    with patch(
+        "homeassistant.components.zwave_js.async_setup", return_value=True
+    ) as mock_setup, patch(
+        "homeassistant.components.zwave_js.async_setup_entry",
+        return_value=True,
+    ) as mock_setup_entry:
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    assert result["title"] == TITLE
+    assert result["data"] == {
+        "url": "ws://localhost:3000",
+        "usb_path": None,
+        "s0_legacy_key": None,
+        "s2_access_control_key": None,
+        "s2_authenticated_key": None,
+        "s2_unauthenticated_key": None,
+        "use_addon": False,
+        "integration_created_addon": False,
+    }
+    assert len(mock_setup.mock_calls) == 1
+    assert len(mock_setup_entry.mock_calls) == 1

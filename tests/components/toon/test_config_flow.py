@@ -1,4 +1,5 @@
 """Tests for the Toon config flow."""
+from http import HTTPStatus
 from unittest.mock import patch
 
 from toonapi import Agreement, ToonError
@@ -8,6 +9,7 @@ from homeassistant.components.toon.const import CONF_AGREEMENT, CONF_MIGRATE, DO
 from homeassistant.config import async_process_ha_core_config
 from homeassistant.config_entries import SOURCE_IMPORT, SOURCE_USER
 from homeassistant.const import CONF_CLIENT_ID, CONF_CLIENT_SECRET
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.setup import async_setup_component
 
@@ -30,13 +32,13 @@ async def setup_component(hass):
         await hass.async_block_till_done()
 
 
-async def test_abort_if_no_configuration(hass):
+async def test_abort_if_no_configuration(hass: HomeAssistant) -> None:
     """Test abort if no app is configured."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_ABORT
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "missing_configuration"
 
 
@@ -50,10 +52,9 @@ async def test_full_flow_implementation(
         DOMAIN, context={"source": SOURCE_USER}
     )
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
     assert result["step_id"] == "pick_implementation"
 
-    # pylint: disable=protected-access
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
         {
@@ -66,7 +67,7 @@ async def test_full_flow_implementation(
         result["flow_id"], {"implementation": "eneco"}
     )
 
-    assert result2["type"] == data_entry_flow.RESULT_TYPE_EXTERNAL_STEP
+    assert result2["type"] == data_entry_flow.FlowResultType.EXTERNAL_STEP
     assert result2["url"] == (
         "https://api.toon.eu/authorize"
         "?response_type=code&client_id=client"
@@ -77,7 +78,7 @@ async def test_full_flow_implementation(
 
     client = await hass_client_no_auth()
     resp = await client.get(f"/auth/external/callback?code=abcd&state={state}")
-    assert resp.status == 200
+    assert resp.status == HTTPStatus.OK
     assert resp.headers["content-type"] == "text/html; charset=utf-8"
 
     aioclient_mock.post(
@@ -113,7 +114,6 @@ async def test_no_agreements(
         DOMAIN, context={"source": SOURCE_USER}
     )
 
-    # pylint: disable=protected-access
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
         {
@@ -140,7 +140,7 @@ async def test_no_agreements(
     with patch("toonapi.Toon.agreements", return_value=[]):
         result3 = await hass.config_entries.flow.async_configure(result["flow_id"])
 
-    assert result3["type"] == data_entry_flow.RESULT_TYPE_ABORT
+    assert result3["type"] == data_entry_flow.FlowResultType.ABORT
     assert result3["reason"] == "no_agreements"
 
 
@@ -153,7 +153,6 @@ async def test_multiple_agreements(
         DOMAIN, context={"source": SOURCE_USER}
     )
 
-    # pylint: disable=protected-access
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
         {
@@ -184,7 +183,7 @@ async def test_multiple_agreements(
     ):
         result3 = await hass.config_entries.flow.async_configure(result["flow_id"])
 
-        assert result3["type"] == data_entry_flow.RESULT_TYPE_FORM
+        assert result3["type"] == data_entry_flow.FlowResultType.FORM
         assert result3["step_id"] == "agreement"
 
         result4 = await hass.config_entries.flow.async_configure(
@@ -204,7 +203,6 @@ async def test_agreement_already_set_up(
         DOMAIN, context={"source": SOURCE_USER}
     )
 
-    # pylint: disable=protected-access
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
         {
@@ -231,7 +229,7 @@ async def test_agreement_already_set_up(
     with patch("toonapi.Toon.agreements", return_value=[Agreement(agreement_id=123)]):
         result3 = await hass.config_entries.flow.async_configure(result["flow_id"])
 
-        assert result3["type"] == data_entry_flow.RESULT_TYPE_ABORT
+        assert result3["type"] == data_entry_flow.FlowResultType.ABORT
         assert result3["reason"] == "already_configured"
 
 
@@ -243,7 +241,7 @@ async def test_toon_abort(
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
-    # pylint: disable=protected-access
+
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
         {
@@ -270,7 +268,7 @@ async def test_toon_abort(
     with patch("toonapi.Toon.agreements", side_effect=ToonError):
         result2 = await hass.config_entries.flow.async_configure(result["flow_id"])
 
-        assert result2["type"] == data_entry_flow.RESULT_TYPE_ABORT
+        assert result2["type"] == data_entry_flow.FlowResultType.ABORT
         assert result2["reason"] == "connection_error"
 
 
@@ -284,7 +282,7 @@ async def test_import(hass, current_request_with_host):
         DOMAIN, context={"source": SOURCE_IMPORT}
     )
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_ABORT
+    assert result["type"] == data_entry_flow.FlowResultType.ABORT
     assert result["reason"] == "already_in_progress"
 
 
@@ -305,7 +303,6 @@ async def test_import_migration(
     assert len(flows) == 1
     assert flows[0]["context"][CONF_MIGRATE] == old_entry.entry_id
 
-    # pylint: disable=protected-access
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
         {
@@ -332,7 +329,7 @@ async def test_import_migration(
     with patch("toonapi.Toon.agreements", return_value=[Agreement(agreement_id=123)]):
         result = await hass.config_entries.flow.async_configure(flows[0]["flow_id"])
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_CREATE_ENTRY
+    assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
 
     entries = hass.config_entries.async_entries(DOMAIN)
     assert len(entries) == 1

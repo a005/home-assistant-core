@@ -4,15 +4,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from glob import glob
 import logging
 import os
-from typing import Any, Callable
+from typing import Any
 from unittest.mock import patch
 
 from homeassistant import core
 from homeassistant.config import get_default_config_dir
+from homeassistant.config_entries import ConfigEntries
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry, device_registry, entity_registry
 from homeassistant.helpers.check_config import async_check_ha_config_file
@@ -21,7 +22,7 @@ import homeassistant.util.yaml.loader as yaml_loader
 
 # mypy: allow-untyped-calls, allow-untyped-defs
 
-REQUIREMENTS = ("colorlog==5.0.1",)
+REQUIREMENTS = ("colorlog==6.6.0",)
 
 _LOGGER = logging.getLogger(__name__)
 # pylint: disable=protected-access
@@ -39,7 +40,7 @@ ERROR_STR = "General Errors"
 
 def color(the_color, *args, reset=None):
     """Color helper."""
-    # pylint: disable=import-outside-toplevel
+    # pylint: disable-next=import-outside-toplevel
     from colorlog.escape_codes import escape_codes, parse_colors
 
     try:
@@ -191,7 +192,7 @@ def check(config_dir, secrets=False):
 
     if secrets:
         # Ensure !secrets point to the patched function
-        yaml_loader.SafeLineLoader.add_constructor("!secret", yaml_loader.secret_yaml)
+        yaml_loader.add_constructor("!secret", yaml_loader.secret_yaml)
 
     def secrets_proxy(*args):
         secrets = Secrets(*args)
@@ -219,9 +220,7 @@ def check(config_dir, secrets=False):
             pat.stop()
         if secrets:
             # Ensure !secrets point to the original function
-            yaml_loader.SafeLineLoader.add_constructor(
-                "!secret", yaml_loader.secret_yaml
-            )
+            yaml_loader.add_constructor("!secret", yaml_loader.secret_yaml)
 
     return res
 
@@ -230,6 +229,7 @@ async def async_check_config(config_dir):
     """Check the HA config."""
     hass = core.HomeAssistant()
     hass.config.config_dir = config_dir
+    hass.config_entries = ConfigEntries(hass, {})
     await area_registry.async_load(hass)
     await device_registry.async_load(hass)
     await entity_registry.async_load(hass)

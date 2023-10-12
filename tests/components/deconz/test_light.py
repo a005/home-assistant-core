@@ -1,5 +1,4 @@
 """deCONZ light platform tests."""
-
 from unittest.mock import patch
 
 import pytest
@@ -20,20 +19,14 @@ from homeassistant.components.light import (
     ATTR_SUPPORTED_COLOR_MODES,
     ATTR_TRANSITION,
     ATTR_XY_COLOR,
-    COLOR_MODE_BRIGHTNESS,
-    COLOR_MODE_COLOR_TEMP,
-    COLOR_MODE_HS,
-    COLOR_MODE_ONOFF,
-    COLOR_MODE_XY,
     DOMAIN as LIGHT_DOMAIN,
     EFFECT_COLORLOOP,
     FLASH_LONG,
     FLASH_SHORT,
     SERVICE_TURN_OFF,
     SERVICE_TURN_ON,
-    SUPPORT_EFFECT,
-    SUPPORT_FLASH,
-    SUPPORT_TRANSITION,
+    ColorMode,
+    LightEntityFeature,
 )
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -42,6 +35,7 @@ from homeassistant.const import (
     STATE_ON,
     STATE_UNAVAILABLE,
 )
+from homeassistant.core import HomeAssistant
 
 from .test_gateway import (
     DECONZ_WEB_REQUEST,
@@ -49,8 +43,12 @@ from .test_gateway import (
     setup_deconz_integration,
 )
 
+from tests.test_util.aiohttp import AiohttpClientMocker
 
-async def test_no_lights_or_groups(hass, aioclient_mock):
+
+async def test_no_lights_or_groups(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Test that no lights or groups entities are created."""
     await setup_deconz_integration(hass, aioclient_mock)
     assert len(hass.states.async_all()) == 0
@@ -95,16 +93,16 @@ async def test_no_lights_or_groups(hass, aioclient_mock):
                     ATTR_COLOR_TEMP: 375,
                     ATTR_EFFECT_LIST: [EFFECT_COLORLOOP],
                     ATTR_SUPPORTED_COLOR_MODES: [
-                        COLOR_MODE_COLOR_TEMP,
-                        COLOR_MODE_HS,
-                        COLOR_MODE_XY,
+                        ColorMode.COLOR_TEMP,
+                        ColorMode.HS,
+                        ColorMode.XY,
                     ],
-                    ATTR_COLOR_MODE: COLOR_MODE_COLOR_TEMP,
+                    ATTR_COLOR_MODE: ColorMode.COLOR_TEMP,
                     ATTR_MIN_MIREDS: 153,
                     ATTR_MAX_MIREDS: 500,
-                    ATTR_SUPPORTED_FEATURES: SUPPORT_TRANSITION
-                    | SUPPORT_FLASH
-                    | SUPPORT_EFFECT,
+                    ATTR_SUPPORTED_FEATURES: LightEntityFeature.TRANSITION
+                    | LightEntityFeature.FLASH
+                    | LightEntityFeature.EFFECT,
                     DECONZ_GROUP: False,
                 },
             },
@@ -145,19 +143,19 @@ async def test_no_lights_or_groups(hass, aioclient_mock):
                     ATTR_MAX_MIREDS: 650,
                     ATTR_EFFECT_LIST: [EFFECT_COLORLOOP],
                     ATTR_SUPPORTED_COLOR_MODES: [
-                        COLOR_MODE_COLOR_TEMP,
-                        COLOR_MODE_HS,
-                        COLOR_MODE_XY,
+                        ColorMode.COLOR_TEMP,
+                        ColorMode.HS,
+                        ColorMode.XY,
                     ],
-                    ATTR_COLOR_MODE: COLOR_MODE_XY,
+                    ATTR_COLOR_MODE: ColorMode.XY,
                     ATTR_BRIGHTNESS: 254,
                     ATTR_HS_COLOR: (29.691, 38.039),
                     ATTR_RGB_COLOR: (255, 206, 158),
                     ATTR_XY_COLOR: (0.427, 0.373),
                     DECONZ_GROUP: False,
-                    ATTR_SUPPORTED_FEATURES: SUPPORT_TRANSITION
-                    | SUPPORT_FLASH
-                    | SUPPORT_EFFECT,
+                    ATTR_SUPPORTED_FEATURES: LightEntityFeature.TRANSITION
+                    | LightEntityFeature.FLASH
+                    | LightEntityFeature.EFFECT,
                 },
             },
         ),
@@ -188,16 +186,16 @@ async def test_no_lights_or_groups(hass, aioclient_mock):
                 "state": STATE_ON,
                 "attributes": {
                     ATTR_EFFECT_LIST: [EFFECT_COLORLOOP],
-                    ATTR_SUPPORTED_COLOR_MODES: [COLOR_MODE_HS],
-                    ATTR_COLOR_MODE: COLOR_MODE_HS,
+                    ATTR_SUPPORTED_COLOR_MODES: [ColorMode.HS],
+                    ATTR_COLOR_MODE: ColorMode.HS,
                     ATTR_BRIGHTNESS: 25,
                     ATTR_HS_COLOR: (294.938, 55.294),
                     ATTR_RGB_COLOR: (243, 113, 255),
                     ATTR_XY_COLOR: (0.357, 0.188),
                     DECONZ_GROUP: False,
-                    ATTR_SUPPORTED_FEATURES: SUPPORT_TRANSITION
-                    | SUPPORT_FLASH
-                    | SUPPORT_EFFECT,
+                    ATTR_SUPPORTED_FEATURES: LightEntityFeature.TRANSITION
+                    | LightEntityFeature.FLASH
+                    | LightEntityFeature.EFFECT,
                 },
             },
         ),
@@ -231,12 +229,13 @@ async def test_no_lights_or_groups(hass, aioclient_mock):
                 "attributes": {
                     ATTR_MIN_MIREDS: 153,
                     ATTR_MAX_MIREDS: 454,
-                    ATTR_SUPPORTED_COLOR_MODES: [COLOR_MODE_COLOR_TEMP],
-                    ATTR_COLOR_MODE: COLOR_MODE_COLOR_TEMP,
+                    ATTR_SUPPORTED_COLOR_MODES: [ColorMode.COLOR_TEMP],
+                    ATTR_COLOR_MODE: ColorMode.COLOR_TEMP,
                     ATTR_BRIGHTNESS: 254,
                     ATTR_COLOR_TEMP: 396,
                     DECONZ_GROUP: False,
-                    ATTR_SUPPORTED_FEATURES: SUPPORT_TRANSITION | SUPPORT_FLASH,
+                    ATTR_SUPPORTED_FEATURES: LightEntityFeature.TRANSITION
+                    | LightEntityFeature.FLASH,
                 },
             },
         ),
@@ -258,11 +257,12 @@ async def test_no_lights_or_groups(hass, aioclient_mock):
                 "entity_id": "light.hue_filament",
                 "state": STATE_ON,
                 "attributes": {
-                    ATTR_SUPPORTED_COLOR_MODES: [COLOR_MODE_BRIGHTNESS],
-                    ATTR_COLOR_MODE: COLOR_MODE_BRIGHTNESS,
+                    ATTR_SUPPORTED_COLOR_MODES: [ColorMode.BRIGHTNESS],
+                    ATTR_COLOR_MODE: ColorMode.BRIGHTNESS,
                     ATTR_BRIGHTNESS: 254,
                     DECONZ_GROUP: False,
-                    ATTR_SUPPORTED_FEATURES: SUPPORT_TRANSITION | SUPPORT_FLASH,
+                    ATTR_SUPPORTED_FEATURES: LightEntityFeature.TRANSITION
+                    | LightEntityFeature.FLASH,
                 },
             },
         ),
@@ -284,8 +284,8 @@ async def test_no_lights_or_groups(hass, aioclient_mock):
                 "entity_id": "light.simple_light",
                 "state": STATE_ON,
                 "attributes": {
-                    ATTR_SUPPORTED_COLOR_MODES: [COLOR_MODE_ONOFF],
-                    ATTR_COLOR_MODE: COLOR_MODE_ONOFF,
+                    ATTR_SUPPORTED_COLOR_MODES: [ColorMode.ONOFF],
+                    ATTR_COLOR_MODE: ColorMode.ONOFF,
                     DECONZ_GROUP: False,
                     ATTR_SUPPORTED_FEATURES: 0,
                 },
@@ -399,6 +399,20 @@ async def test_light_state_change(hass, aioclient_mock, mock_deconz_websocket):
                 "xy": (0.411, 0.351),
             },
         ),
+        (  # Turn on light without transition time
+            {
+                "light_on": True,
+                "service": SERVICE_TURN_ON,
+                "call": {
+                    ATTR_ENTITY_ID: "light.hue_go",
+                    ATTR_TRANSITION: 0,
+                },
+            },
+            {
+                "on": True,
+                "transitiontime": 0,
+            },
+        ),
         (  # Turn on light with short color loop
             {
                 "light_on": False,
@@ -450,6 +464,22 @@ async def test_light_state_change(hass, aioclient_mock, mock_deconz_websocket):
             {
                 "bri": 0,
                 "transitiontime": 50,
+                "alert": "select",
+            },
+        ),
+        (  # Turn off light without transition time
+            {
+                "light_on": True,
+                "service": SERVICE_TURN_OFF,
+                "call": {
+                    ATTR_ENTITY_ID: "light.hue_go",
+                    ATTR_TRANSITION: 0,
+                    ATTR_FLASH: FLASH_SHORT,
+                },
+            },
+            {
+                "bri": 0,
+                "transitiontime": 0,
                 "alert": "select",
             },
         ),
@@ -525,7 +555,9 @@ async def test_light_service_calls(hass, aioclient_mock, input, expected):
         assert len(aioclient_mock.mock_calls) == 1  # not called
 
 
-async def test_ikea_default_transition_time(hass, aioclient_mock):
+async def test_ikea_default_transition_time(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Verify that service calls to IKEA lights always extend with transition tinme 0 if absent."""
     data = {
         "lights": {
@@ -591,7 +623,9 @@ async def test_ikea_default_transition_time(hass, aioclient_mock):
     }
 
 
-async def test_lidl_christmas_light(hass, aioclient_mock):
+async def test_lidl_christmas_light(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Test that lights or groups entities are created."""
     data = {
         "lights": {
@@ -638,7 +672,9 @@ async def test_lidl_christmas_light(hass, aioclient_mock):
     assert hass.states.get("light.lidl_xmas_light")
 
 
-async def test_configuration_tool(hass, aioclient_mock):
+async def test_configuration_tool(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Verify that configuration tool is not created."""
     data = {
         "lights": {
@@ -676,8 +712,8 @@ async def test_configuration_tool(hass, aioclient_mock):
                 "attributes": {
                     ATTR_MIN_MIREDS: 153,
                     ATTR_MAX_MIREDS: 500,
-                    ATTR_SUPPORTED_COLOR_MODES: [COLOR_MODE_COLOR_TEMP, COLOR_MODE_XY],
-                    ATTR_COLOR_MODE: COLOR_MODE_COLOR_TEMP,
+                    ATTR_SUPPORTED_COLOR_MODES: [ColorMode.COLOR_TEMP, ColorMode.XY],
+                    ATTR_COLOR_MODE: ColorMode.COLOR_TEMP,
                     ATTR_BRIGHTNESS: 255,
                     ATTR_EFFECT_LIST: [EFFECT_COLORLOOP],
                     "all_on": False,
@@ -696,15 +732,15 @@ async def test_configuration_tool(hass, aioclient_mock):
                 "attributes": {
                     ATTR_MIN_MIREDS: 153,
                     ATTR_MAX_MIREDS: 500,
-                    ATTR_SUPPORTED_COLOR_MODES: [COLOR_MODE_COLOR_TEMP, COLOR_MODE_XY],
-                    ATTR_COLOR_MODE: COLOR_MODE_COLOR_TEMP,
+                    ATTR_SUPPORTED_COLOR_MODES: [ColorMode.COLOR_TEMP, ColorMode.XY],
+                    ATTR_COLOR_MODE: ColorMode.COLOR_TEMP,
                     ATTR_BRIGHTNESS: 50,
                     ATTR_EFFECT_LIST: [EFFECT_COLORLOOP],
                     "all_on": False,
                     DECONZ_GROUP: True,
-                    ATTR_SUPPORTED_FEATURES: SUPPORT_TRANSITION
-                    | SUPPORT_FLASH
-                    | SUPPORT_EFFECT,
+                    ATTR_SUPPORTED_FEATURES: LightEntityFeature.TRANSITION
+                    | LightEntityFeature.FLASH
+                    | LightEntityFeature.EFFECT,
                 },
             },
         ),
@@ -718,16 +754,16 @@ async def test_configuration_tool(hass, aioclient_mock):
                 "attributes": {
                     ATTR_MIN_MIREDS: 153,
                     ATTR_MAX_MIREDS: 500,
-                    ATTR_SUPPORTED_COLOR_MODES: [COLOR_MODE_COLOR_TEMP, COLOR_MODE_XY],
-                    ATTR_COLOR_MODE: COLOR_MODE_XY,
+                    ATTR_SUPPORTED_COLOR_MODES: [ColorMode.COLOR_TEMP, ColorMode.XY],
+                    ATTR_COLOR_MODE: ColorMode.XY,
                     ATTR_HS_COLOR: (52.0, 100.0),
                     ATTR_RGB_COLOR: (255, 221, 0),
                     ATTR_XY_COLOR: (0.5, 0.5),
                     "all_on": False,
                     DECONZ_GROUP: True,
-                    ATTR_SUPPORTED_FEATURES: SUPPORT_TRANSITION
-                    | SUPPORT_FLASH
-                    | SUPPORT_EFFECT,
+                    ATTR_SUPPORTED_FEATURES: LightEntityFeature.TRANSITION
+                    | LightEntityFeature.FLASH
+                    | LightEntityFeature.EFFECT,
                 },
             },
         ),
@@ -939,7 +975,9 @@ async def test_group_service_calls(hass, aioclient_mock, input, expected):
         assert len(aioclient_mock.mock_calls) == 1  # not called
 
 
-async def test_empty_group(hass, aioclient_mock):
+async def test_empty_group(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Verify that a group without a list of lights is not created."""
     data = {
         "groups": {
@@ -961,7 +999,9 @@ async def test_empty_group(hass, aioclient_mock):
     assert not hass.states.get("light.empty_group")
 
 
-async def test_disable_light_groups(hass, aioclient_mock):
+async def test_disable_light_groups(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Test disallowing light groups work."""
     data = {
         "groups": {
@@ -1139,7 +1179,9 @@ async def test_non_color_light_reports_color(
         assert hass.states.get("light.group").attributes[ATTR_HS_COLOR]
 
 
-async def test_verify_group_supported_features(hass, aioclient_mock):
+async def test_verify_group_supported_features(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
     """Test that group supported features reflect what included lights support."""
     data = {
         "groups": {
@@ -1191,5 +1233,7 @@ async def test_verify_group_supported_features(hass, aioclient_mock):
     assert hass.states.get("light.group").state == STATE_ON
     assert (
         hass.states.get("light.group").attributes[ATTR_SUPPORTED_FEATURES]
-        == SUPPORT_TRANSITION | SUPPORT_FLASH | SUPPORT_EFFECT
+        == LightEntityFeature.TRANSITION
+        | LightEntityFeature.FLASH
+        | LightEntityFeature.EFFECT
     )

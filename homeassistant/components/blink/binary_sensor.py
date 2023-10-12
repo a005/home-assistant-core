@@ -2,19 +2,30 @@
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import (
-    DEVICE_CLASS_BATTERY,
-    DEVICE_CLASS_MOTION,
+    BinarySensorDeviceClass,
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, TYPE_BATTERY, TYPE_CAMERA_ARMED, TYPE_MOTION_DETECTED
+from .const import (
+    DEFAULT_BRAND,
+    DOMAIN,
+    TYPE_BATTERY,
+    TYPE_CAMERA_ARMED,
+    TYPE_MOTION_DETECTED,
+)
 
 BINARY_SENSORS_TYPES: tuple[BinarySensorEntityDescription, ...] = (
     BinarySensorEntityDescription(
         key=TYPE_BATTERY,
         name="Battery",
-        device_class=DEVICE_CLASS_BATTERY,
+        device_class=BinarySensorDeviceClass.BATTERY,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key=TYPE_CAMERA_ARMED,
@@ -23,12 +34,14 @@ BINARY_SENSORS_TYPES: tuple[BinarySensorEntityDescription, ...] = (
     BinarySensorEntityDescription(
         key=TYPE_MOTION_DETECTED,
         name="Motion Detected",
-        device_class=DEVICE_CLASS_MOTION,
+        device_class=BinarySensorDeviceClass.MOTION,
     ),
 )
 
 
-async def async_setup_entry(hass, config, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant, config: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
     """Set up the blink binary sensors."""
     data = hass.data[DOMAIN][config.entry_id]
 
@@ -43,15 +56,23 @@ async def async_setup_entry(hass, config, async_add_entities):
 class BlinkBinarySensor(BinarySensorEntity):
     """Representation of a Blink binary sensor."""
 
-    def __init__(self, data, camera, description: BinarySensorEntityDescription):
+    def __init__(
+        self, data, camera, description: BinarySensorEntityDescription
+    ) -> None:
         """Initialize the sensor."""
         self.data = data
         self.entity_description = description
         self._attr_name = f"{DOMAIN} {camera} {description.name}"
         self._camera = data.cameras[camera]
         self._attr_unique_id = f"{self._camera.serial}-{description.key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, self._camera.serial)},
+            name=camera,
+            manufacturer=DEFAULT_BRAND,
+            model=self._camera.camera_type,
+        )
 
-    def update(self):
+    def update(self) -> None:
         """Update sensor state."""
         self.data.refresh()
         state = self._camera.attributes[self.entity_description.key]
